@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 load_dotenv()
 
 OUTPUT = Path("msrtc_results.json")
+BASE_URL = "https://npublic.msrtcors.com/reservation-home"
 
 
 class Service(BaseModel):
@@ -39,56 +40,62 @@ class MsrtcResult(BaseModel):
     routes: list[RouteResult]
 
 
-BASE_URL = "https://npublic.msrtcors.com/reservation-home"
+TASK = """
+Collect the CURRENT publicly displayed MSRTC services for ONE route only:
+MUMBAI -> PUNE.
 
+Use ONLY the official MSRTC public reservation/timetable website:
+https://npublic.msrtcors.com/reservation-home
 
-async def search_route(origin: str, destination: str) -> RouteResult:
-    task = f"""
-You are searching ONE route only: {origin} -> {destination}.
+Do not search Bengaluru or any other route.
+Do not use Google/search engines or third-party timetable websites.
+Do not log in, book, pay, enter personal information, or bypass CAPTCHA,
+authentication, rate limits, robots/access controls, or any other protection.
 
-Use ONLY this official MSRTC public reservation/timetable website:
-{BASE_URL}
+You MUST actually complete the public MSRTC search before calling done.
 
-You MUST complete the public search before calling done.
+INTERACTION SEQUENCE:
+1. Open the official MSRTC reservation/timetable page.
+2. Locate the From field.
+3. Type "Mumbai".
+4. Wait for the autocomplete/dropdown.
+5. CLICK the matching Mumbai option. Typing alone is not sufficient.
+6. Locate the To field.
+7. Type "Pune".
+8. Wait for the autocomplete/dropdown.
+9. CLICK the matching Pune option. Typing alone is not sufficient.
+10. Choose a future date accepted by the website.
+11. CLICK the public Search/Submit button.
+12. WAIT until the results page/table is actually visible.
+13. Inspect the COMPLETE displayed service list. Scroll through all result rows/pages that are
+part of the public result so you don't stop at the first visible services.
 
-Required interaction sequence:
-1. On the MSRTC page, find the From field.
-2. Type exactly: {origin}
-3. If an autocomplete/dropdown appears, CLICK the matching {origin} option. Typing text alone is NOT a completed step.
-4. Find the To field.
-5. Type exactly: {destination}
-6. If an autocomplete/dropdown appears, CLICK the matching {destination} option. Typing text alone is NOT a completed step.
-7. Choose a future date accepted by the public site.
-8. CLICK the public search/submit button.
-9. WAIT for the search result page/table to load.
-10. Only after the results page is visible, inspect ALL displayed services. Scroll if needed.
+CRITICAL:
+- Never call done while still on the search form.
+- Never call done merely because Mumbai/Pune text was typed.
+- Never claim search_completed=true unless the Search button was clicked and a result page/table
+was actually displayed.
+- If the official result explicitly says there are no services, set search_completed=true and
+services=[].
+- If the website prevents completion of the public search, set search_completed=false and
+services=[]. Do not invent data.
 
-CRITICAL: Do NOT call done while still on the form, while an autocomplete dropdown is open,
-or immediately after typing a city. The task is unfinished until the search button has been
-clicked and the resulting page/table has been inspected.
-
-Record ONLY information visibly returned by MSRTC. Never guess.
-For every displayed service collect when available:
+For every service visibly returned by MSRTC, collect when available:
 service/bus number, bus/service type, origin, destination, departure time, arrival time,
 duration, distance, boarding stop, alighting stop, and intermediate/stop-sequence information.
-
-If the official result page explicitly shows no services, set search_completed=true and services=[].
-If you cannot complete the public search because the website itself prevents it, set
-search_completed=false and services=[]. Do not pretend the search was completed.
-
-Do not use search engines or third-party timetable sites.
-Do not log in, book, pay, enter personal information, or bypass CAPTCHA, authentication,
-rate limits, robots/access controls, or other protections.
+Record only values visible on the official MSRTC site. Never guess missing values.
 
 Return ONLY the structured RouteResult.
 """
 
+
+async def main() -> None:
     agent = Agent(
-        task=task,
+        task=TASK,
         llm=ChatGoogle(model="gemini-3.5-flash-lite"),
         output_model_schema=RouteResult,
-        max_steps=80,
-        max_actions_per_step=3,
+        max_steps=100,
+        max_actions_per_step=2,
         use_vision=True,
         use_judge=True,
         directly_open_url=True,
@@ -96,48 +103,31 @@ Return ONLY the structured RouteResult.
 
     history = await agent.run()
     result = history.structured_output
+
+    print("\n========== MSRTC MUMBAI -> PUNE ==========")
     if result is None:
-        raise RuntimeError(
-            f"No structured result for {origin}->{destination}: "
-            f"{history.final_result() or 'empty final result'}"
-        )
-    return result
+        print("ERROR: No structured result returned.")
+        print(history.final_result() or "empty final result")
+        print("No importable dataset was saved.")
+        return
 
+    print(result.model_dump_json(indent=2))
 
-async def main() -> None:
-    routes: list[RouteResult] = []
-
-    for origin, destination in (("Mumbai", "Pune"), ("Mumbai", "Bengaluru")):
-        print(f"\n========== SEARCHING {origin} -> {destination} ==========")
-        try:
-            result = await search_route(origin, destination)
-        except Exception as exc:
-            print(f"ERROR: {exc}")
-            print("This route was NOT treated as successfully searched.")
-            continue
-
-        print(result.model_dump_json(indent=2))
-        routes.append(result)
-
-    # Never save partial data as if both routes were completed.
-    required = {("Mumbai", "Pune"), ("Mumbai", "Bengaluru")}
-    completed = {(r.origin, r.destination) for r in routes if r.search_completed}
-
-    if completed != required:
-        print("\nERROR: Both required route searches were not completed.")
-        print(f"Completed routes: {sorted(completed)}")
+    if not result.search_completed:
+        print("\nERROR: Official Mumbai -> Pune search was not actually completed.")
         print("No importable dataset was saved.")
         return
 
     final = MsrtcResult(
         source=BASE_URL,
         retrieved_at=datetime.now(timezone.utc).isoformat(),
-        routes=routes,
+        routes=[result],
     )
     OUTPUT.write_text(final.model_dump_json(indent=2), encoding="utf-8")
-    print("\n========== FINAL VALIDATED RESULT ==========")
-    print(final.model_dump_json(indent=2))
-    print(f"\nSaved validated result to {OUTPUT}")
+
+    print("\n========== VALIDATED RESULT ==========")
+    print(f"Mumbai -> Pune services found: {len(result.services)}")
+    print(f"Saved validated result to {OUTPUT}")
 
 
 if __name__ == "__main__":
