@@ -30,14 +30,9 @@ class Service(BaseModel):
 class RouteResult(BaseModel):
     origin: str
     destination: str
+    service_date: str
     search_completed: bool
     services: list[Service] = Field(default_factory=list)
-
-
-class MsrtcResult(BaseModel):
-    source: str
-    retrieved_at: str
-    routes: list[RouteResult]
 
 
 TASK = """
@@ -65,20 +60,18 @@ INTERACTION SEQUENCE:
 8. Wait for the autocomplete/dropdown.
 9. CLICK the matching Pune option. Typing alone is not sufficient.
 10. Choose a future date accepted by the website.
-11. CLICK the public Search/Submit button.
-12. WAIT until the results page/table is actually visible.
-13. Inspect the COMPLETE displayed service list. Scroll through all result rows/pages that are
-part of the public result so you don't stop at the first visible services.
+11. BEFORE submitting, record the EXACT date visibly selected in the date field. Return it as service_date in YYYY-MM-DD format. Do not guess or use today's date unless that is the date visibly selected.
+12. CLICK the public Search/Submit button.
+13. WAIT until the results page/table is actually visible.
+14. Inspect the COMPLETE displayed service list. Scroll through all result rows/pages that are part of the public result so you don't stop at the first visible services.
 
 CRITICAL:
 - Never call done while still on the search form.
 - Never call done merely because Mumbai/Pune text was typed.
-- Never claim search_completed=true unless the Search button was clicked and a result page/table
-was actually displayed.
-- If the official result explicitly says there are no services, set search_completed=true and
-services=[].
-- If the website prevents completion of the public search, set search_completed=false and
-services=[]. Do not invent data.
+- Never claim search_completed=true unless the Search button was clicked and a result page/table was actually displayed.
+- If the official result explicitly says there are no services, set search_completed=true and services=[].
+- If the website prevents completion of the public search, set search_completed=false and services=[].
+- If you cannot read the exact selected date, set search_completed=false and services=[] rather than guessing.
 
 For every service visibly returned by MSRTC, collect when available:
 service/bus number, bus/service type, origin, destination, departure time, arrival time,
@@ -118,14 +111,21 @@ async def main() -> None:
         print("No importable dataset was saved.")
         return
 
-    final = MsrtcResult(
-        source=BASE_URL,
-        retrieved_at=datetime.now(timezone.utc).isoformat(),
-        routes=[result],
-    )
-    OUTPUT.write_text(final.model_dump_json(indent=2), encoding="utf-8")
+    if not result.service_date:
+        print("\nERROR: Exact selected MSRTC service date was not captured.")
+        print("No importable dataset was saved.")
+        return
+
+    final = {
+        "source": BASE_URL,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "routes": [result.model_dump()],
+    }
+    import json
+    OUTPUT.write_text(json.dumps(final, indent=2), encoding="utf-8")
 
     print("\n========== VALIDATED RESULT ==========")
+    print(f"Mumbai -> Pune service date: {result.service_date}")
     print(f"Mumbai -> Pune services found: {len(result.services)}")
     print(f"Saved validated result to {OUTPUT}")
 
